@@ -1,4 +1,5 @@
 import openai
+from openai import AsyncOpenAI
 import os
 import time
 import requests
@@ -66,7 +67,11 @@ def prompt_to_messages(prompt):
 
 async def add_text_to_chat_mode_generator(chat_mode):
     in_function_call = False
-    async for resp in chat_mode:
+    async for resp_completion in chat_mode:
+        resp = {
+            'choices': [vars(choice) for choice in resp_completion.choices]
+        }
+
         if "choices" in resp:
             for c in resp['choices']:
                 
@@ -107,12 +112,24 @@ async def add_text_to_chat_mode_generator(chat_mode):
         yield {'choices': [{'text': ')```'}]}
 
 def add_text_to_chat_mode(chat_mode):
-    if isinstance(chat_mode, (types.AsyncGeneratorType, types.GeneratorType)):
+    if isinstance(chat_mode, (types.AsyncGeneratorType, types.GeneratorType, openai.AsyncStream)):
         return add_text_to_chat_mode_generator(chat_mode)
     else:
-        for c in chat_mode['choices']:
-            c['text'] = c['message']['content']
-        return chat_mode
+        choices = []
+
+        for c in chat_mode.choices:
+            choice = {}
+            choice['index'] = c.index
+            choice['logprobs'] = c.logprobs
+            choice['message'] = vars(c.message)
+            choice['text'] = c.message.content
+            choices.append(choice)
+
+        chat_completion = {
+            'choices': choices
+        }
+        
+        return chat_completion
 
 class OpenAI(LLM):
     llm_name: str = "openai"
@@ -158,7 +175,7 @@ class OpenAI(LLM):
         
         # fill in default API key value
         if api_key is None: # get from environment variable
-            api_key = os.environ.get("OPENAI_API_KEY", getattr(openai, "api_key", None))
+            api_key = os.environ.get("OPENAI_API_KEY", None)
         if api_key is not None and not api_key.startswith("sk-") and os.path.exists(os.path.expanduser(api_key)): # get from file
             with open(os.path.expanduser(api_key), 'r') as file:
                 api_key = file.read().replace('\n', '')
@@ -207,6 +224,12 @@ class OpenAI(LLM):
                 "Content-Type": "application/json"
             }
 
+        self.client = AsyncOpenAI(
+            api_key = self.api_key,
+            organization = self.organization,
+            base_url = self.api_base
+        )
+
     def session(self, asynchronous=False):
         if asynchronous:
             return OpenAISession(self)
@@ -241,7 +264,11 @@ class OpenAI(LLM):
         
         # iterate through the stream
         all_done = False
-        async for curr_out in gen:
+        async for curr_completion in gen:
+
+            curr_out = {
+                'choices': [vars(choice) for choice in curr_completion.choices]
+            }
 
             # if we have a cached output, extend it with the current output
             if cached_out is not None:
@@ -342,45 +369,21 @@ class OpenAI(LLM):
         Note that is uses the local auth token, and does not rely on the openai one.
         """
 
-        # save the params of the openai library
-        prev_key = openai.api_key
-        prev_org = openai.organization
-        prev_type = openai.api_type
-        prev_version = openai.api_version
-        prev_base = openai.api_base
-        
-        # set the params of the openai library if we have them
-        if self.api_key is not None:
-            openai.api_key = self.api_key
-        if self.organization is not None:
-            openai.organization = self.organization
-        if self.api_type is not None:
-            openai.api_type = self.api_type
-        if self.api_version is not None:
-            openai.api_version = self.api_version
-        if self.api_base is not None:
-            openai.api_base = self.api_base
+        assert self.client.api_key is not None, "You must provide an OpenAI API key to use the OpenAI LLM. Either pass it in the constructor, set the OPENAI_API_KEY environment variable, or create the file ~/.openai_api_key with your key in it."
 
-        assert openai.api_key is not None, "You must provide an OpenAI API key to use the OpenAI LLM. Either pass it in the constructor, set the OPENAI_API_KEY environment variable, or create the file ~/.openai_api_key with your key in it."
-        
         if self.chat_mode:
             kwargs['messages'] = prompt_to_messages(kwargs['prompt'])
+            del kwargs['deployment_id']
             del kwargs['prompt']
             del kwargs['echo']
             del kwargs['logprobs']
             # print(kwargs)
-            out = await openai.ChatCompletion.acreate(**kwargs)
+            out = await self.client.chat.completions.create(**kwargs)
             out = add_text_to_chat_mode(out)
         else:
-            out = await openai.Completion.acreate(**kwargs)
-        
-        # restore the params of the openai library
-        openai.api_key = prev_key
-        openai.organization = prev_org
-        openai.api_type = prev_type
-        openai.api_version = prev_version
-        openai.api_base = prev_base
-        
+            del kwargs['deployment_id']
+            out = await self.client.completions.create(**kwargs)
+                
         return out
 
     async def _rest_call(self, **kwargs):
@@ -665,8 +668,8 @@ class OpenAISession(LLMSession):
                     if logit_bias is not None:
                         call_args["logit_bias"] = {str(k): v for k,v in logit_bias.items()} # convert keys to strings since that's the open ai api's format
                     out = await self.llm.caller(**call_args)
-
-                except (openai.error.RateLimitError, openai.error.ServiceUnavailableError, openai.error.APIError, openai.error.Timeout):
+                    
+                except (openai.RateLimitError, openai.InternalServerError, openai.UnprocessableEntityError, openai.APITimeoutError):
                     await asyncio.sleep(3)
                     try_again = True
                     fail_count += 1
@@ -680,7 +683,12 @@ class OpenAISession(LLMSession):
             if stream:
                 return self.llm.stream_then_save(out, key, stop_regex, n)
             else:
-                llm_cache[key] = out
+                if type(out) is dict:
+                    llm_cache[key] = out
+                else:
+                    llm_cache[key] = {
+                        'choices': [{'text': choice.text} for choice in out.choices]
+                    }
         
         # wrap as a list if needed
         if stream:

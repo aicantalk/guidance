@@ -293,6 +293,7 @@ class Program:
                 return self._stream_run(loop, new_program)
             else:
                 loop.run_until_complete(new_program.execute())
+                loop.close()
 
         return new_program
     
