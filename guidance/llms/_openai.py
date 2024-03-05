@@ -227,7 +227,9 @@ class OpenAI(LLM):
         self.client = AsyncOpenAI(
             api_key = self.api_key,
             organization = self.organization,
-            base_url = self.api_base
+            base_url = self.api_base,
+            timeout = 15.0,
+            max_retries=self.max_retries
         )
 
     def session(self, asynchronous=False):
@@ -641,44 +643,33 @@ class OpenAISession(LLMSession):
 
             functions = extract_function_defs(prompt)
 
-            fail_count = 0
-            while True:
-                try_again = False
-                try:
-                    self.llm.add_call()
-                    call_args = {
-                        "model": self.llm.model_name,
-                        "deployment_id": self.llm.deployment_id,
-                        "prompt": prompt,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                        "top_p": top_p,
-                        "n": n,
-                        "stop": stop,
-                        "logprobs": logprobs,
-                        "echo": echo,
-                        "stream": stream,
-                        **completion_kwargs
-                    }
-                    if functions is None:
-                        if "function_call" in call_args:
-                            del call_args["function_call"]
-                    else:
-                        call_args["functions"] = functions
-                    if logit_bias is not None:
-                        call_args["logit_bias"] = {str(k): v for k,v in logit_bias.items()} # convert keys to strings since that's the open ai api's format
-                    out = await self.llm.caller(**call_args)
-                    
-                except (openai.RateLimitError, openai.InternalServerError, openai.UnprocessableEntityError, openai.APITimeoutError):
-                    await asyncio.sleep(3)
-                    try_again = True
-                    fail_count += 1
+            try:
+                self.llm.add_call()
+                call_args = {
+                    "model": self.llm.model_name,
+                    "deployment_id": self.llm.deployment_id,
+                    "prompt": prompt,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "n": n,
+                    "stop": stop,
+                    "logprobs": logprobs,
+                    "echo": echo,
+                    "stream": stream,
+                    **completion_kwargs
+                }
+                if functions is None:
+                    if "function_call" in call_args:
+                        del call_args["function_call"]
+                else:
+                    call_args["functions"] = functions
+                if logit_bias is not None:
+                    call_args["logit_bias"] = {str(k): v for k,v in logit_bias.items()} # convert keys to strings since that's the open ai api's format
+                out = await self.llm.caller(**call_args)
                 
-                if not try_again:
-                    break
-
-                if fail_count > self.llm.max_retries:
-                    raise Exception(f"Too many (more than {self.llm.max_retries}) OpenAI API errors in a row!")
+            except (openai.RateLimitError, openai.InternalServerError, openai.UnprocessableEntityError, openai.APITimeoutError):
+                raise Exception(f"OpenAI API errors!")
 
             if stream:
                 return self.llm.stream_then_save(out, key, stop_regex, n)
