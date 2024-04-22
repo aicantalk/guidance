@@ -228,7 +228,7 @@ class OpenAI(LLM):
             api_key = self.api_key,
             organization = self.organization,
             base_url = self.api_base,
-            timeout = 15.0,
+            timeout = 60.0,
             max_retries=self.max_retries
         )
 
@@ -667,9 +667,17 @@ class OpenAISession(LLMSession):
                 if logit_bias is not None:
                     call_args["logit_bias"] = {str(k): v for k,v in logit_bias.items()} # convert keys to strings since that's the open ai api's format
                 out = await self.llm.caller(**call_args)
-                
-            except (openai.RateLimitError, openai.InternalServerError, openai.UnprocessableEntityError, openai.APITimeoutError):
-                raise Exception(f"OpenAI API errors!")
+
+            except (openai.RateLimitError) as e:
+                raise Exception(f"OpenAI rate limit error: {e}")
+            except (openai.InternalServerError) as e:
+                raise Exception(f"OpenAI internal server error: {e}")
+            except (openai.UnprocessableEntityError) as e:
+                raise Exception(f"OpenAI unprocessable entity error: {e}")
+            except (openai.APITimeoutError) as e:
+                raise Exception(f"OpenAI API timeout error: {e}")
+            except Exception as e:
+                raise Exception(f"OpenAI API error: {e}")
 
             if stream:
                 return self.llm.stream_then_save(out, key, stop_regex, n)
