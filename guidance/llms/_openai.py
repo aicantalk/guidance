@@ -77,9 +77,9 @@ async def add_text_to_chat_mode_generator(chat_mode):
                 
                 # move content from delta to text so we have a consistent interface with non-chat mode
                 found_content = False
-                if "content" in c['delta'] and c['delta']['content'] != "":
+                if c['delta'].content and c['delta'].content != "":
                     found_content = True
-                    c['text'] = c['delta']['content']
+                    c['text'] = c['delta'].content
 
                 # capture function call data and convert to text again so we have a consistent interface with non-chat mode and open models
                 if "function_call" in c['delta']:
@@ -267,9 +267,20 @@ class OpenAI(LLM):
         # iterate through the stream
         all_done = False
         async for curr_completion in gen:
+            
+            choices = []
+
+            for c in curr_completion['choices']:
+                choice = {}
+
+                choice['index'] = c['index']
+                choice['logprobs'] = c['logprobs']
+                choice['delta'] = vars(c['delta'])
+                choice['text'] = c['delta'].content
+                choices.append(choice)
 
             curr_out = {
-                'choices': [vars(choice) for choice in curr_completion.choices]
+                'choices': choices
             }
 
             # if we have a cached output, extend it with the current output
