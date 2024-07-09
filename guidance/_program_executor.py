@@ -4,10 +4,16 @@ import inspect
 import re
 import asyncio
 import logging
+from functools import lru_cache
 import pyparsing as pp
 from ._grammar import grammar
 from ._variable_stack import VariableStack
 log = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1000)
+def parse_string(program_text):
+    return grammar.parse_string(program_text)
 
 
 class ProgramExecutor():
@@ -48,7 +54,8 @@ class ProgramExecutor():
 
         # parse the program text
         try:
-            self.parse_tree = grammar.parse_string(program._text)
+            self.parse_tree = parse_string(program._text)
+
         except (pp.ParseException, pp.ParseSyntaxException) as e:
             initial_str = program._text[max(0, e.loc-40):e.loc]
             initial_str = initial_str.split("\n")[-1] # trim off any lines before the error
